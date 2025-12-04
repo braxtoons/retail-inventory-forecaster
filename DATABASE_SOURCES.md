@@ -15,7 +15,7 @@ This document tracks all data sources used in the Retail Inventory Forecaster ap
 
 ## Recommended Kaggle Datasets for Real Data
 
-### 1. Store Sales - Time Series Forecasting (RECOMMENDED)
+### 1. Store Sales - Time Series Forecasting
 - **Source**: Kaggle Competition
 - **Link**: https://www.kaggle.com/competitions/store-sales-time-series-forecasting
 - **Provider**: Corporación Favorita (Ecuadorian grocery retailer)
@@ -33,7 +33,7 @@ This document tracks all data sources used in the Retail Inventory Forecaster ap
 - **Granularity**: Weekly sales data
 - **Features**: Department-level sales across stores
 - **Format**: CSV
-- **License**: Check Kaggle dataset page
+- **License**: Data files © Original Authors
 
 ### 3. Retail Sales Forecasting Dataset
 - **Source**: Kaggle Dataset
@@ -42,7 +42,7 @@ This document tracks all data sources used in the Retail Inventory Forecaster ap
 - **Last Updated**: May 2024
 - **Features**: Structured retail sales data
 - **Format**: CSV
-- **License**: Check Kaggle dataset page
+- **License**: Unknown
 
 ### 4. Superstore Sales Dataset
 - **Source**: Kaggle Dataset
@@ -50,7 +50,7 @@ This document tracks all data sources used in the Retail Inventory Forecaster ap
 - **Provider**: Kaggle user rohitsahoo
 - **Features**: Superstore sales with product categories
 - **Format**: CSV
-- **License**: Check Kaggle dataset page
+- **License**: GPL 2
 
 ### 5. Store Sales Forecasting Dataset
 - **Source**: Kaggle Dataset
@@ -58,7 +58,7 @@ This document tracks all data sources used in the Retail Inventory Forecaster ap
 - **Provider**: Kaggle user tanayatipre
 - **Features**: Time series sales data
 - **Format**: CSV
-- **License**: Check Kaggle dataset page
+- **License**: Apache 2.0
 
 ### 6. Retail Sales Forecasting (Tevec Systems)
 - **Source**: Kaggle Dataset
@@ -66,7 +66,7 @@ This document tracks all data sources used in the Retail Inventory Forecaster ap
 - **Provider**: Tevec Systems
 - **Features**: Retail sales data
 - **Format**: CSV
-- **License**: Check Kaggle dataset page
+- **License**: CC BY-NC-SA 4.0
 
 ## Data Import Instructions
 
@@ -92,7 +92,7 @@ To import other Kaggle datasets:
 
 ## Active Data Source
 
-**Current**: Sample Generated Data (as of 2025-12-03)
+**Current**: Sample Generated Data
 
 **To Switch to Real Data**: Follow import instructions and update this section with:
 - Dataset name
