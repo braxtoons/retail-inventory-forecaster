@@ -222,19 +222,19 @@ function App() {
           </div>
         )}
 
-        {accuracyMetrics && (
+        {accuracyMetrics && accuracyMetrics.mae != null && accuracyMetrics.mape != null && (
           <div className="metrics">
             <div className="metric-card">
               <h3>Mean Absolute Error</h3>
               <div className="value">
-                {accuracyMetrics.mae.toFixed(2)}
+                {!isNaN(accuracyMetrics.mae) ? accuracyMetrics.mae.toFixed(2) : 'N/A'}
                 <span className="unit">units</span>
               </div>
             </div>
             <div className="metric-card">
               <h3>Mean Absolute % Error</h3>
               <div className="value">
-                {accuracyMetrics.mape.toFixed(2)}
+                {!isNaN(accuracyMetrics.mape) ? accuracyMetrics.mape.toFixed(2) : 'N/A'}
                 <span className="unit">%</span>
               </div>
             </div>

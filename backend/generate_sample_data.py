@@ -7,6 +7,13 @@ def generate_sample_data():
     conn = get_db_connection()
     cur = conn.cursor()
 
+    # Clear existing data to prevent duplicates
+    print("Clearing existing data...")
+    cur.execute('DELETE FROM forecasts')
+    cur.execute('DELETE FROM sales_data')
+    cur.execute('DELETE FROM products')
+    conn.commit()
+
     # Sample products
     products = [
         ('Laptop', 'Electronics', 899.99),

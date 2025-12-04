@@ -42,6 +42,7 @@ def get_historical_data():
         conn = get_db_connection()
         cur = conn.cursor()
 
+        # Get the most recent N days of available data (works with old datasets)
         query = """
             SELECT
                 sale_date,
@@ -49,12 +50,16 @@ def get_historical_data():
                 SUM(total_amount) as total_amount
             FROM sales_data
             WHERE product_id = %s
-            AND sale_date >= CURRENT_DATE - INTERVAL '%s days'
+            AND sale_date >= (
+                SELECT MAX(sale_date) - INTERVAL '%s days'
+                FROM sales_data
+                WHERE product_id = %s
+            )
             GROUP BY sale_date
             ORDER BY sale_date
         """
 
-        cur.execute(query, (product_id, days_back))
+        cur.execute(query, (product_id, days_back, product_id))
         historical_data = cur.fetchall()
 
         cur.close()

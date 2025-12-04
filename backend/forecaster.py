@@ -7,21 +7,38 @@ class InventoryForecaster:
     def __init__(self):
         self.model = None
 
-    def get_historical_data(self, product_id, days_back=730):
-        """Fetch historical sales data for a product"""
+    def get_historical_data(self, product_id, days_back=None):
+        """Fetch historical sales data for a product
+
+        Args:
+            product_id: ID of the product
+            days_back: Number of days back to fetch, or None for all data
+        """
         conn = get_db_connection()
         cur = conn.cursor()
 
-        query = """
-            SELECT sale_date as ds, SUM(quantity_sold) as y
-            FROM sales_data
-            WHERE product_id = %s
-            AND sale_date >= CURRENT_DATE - INTERVAL '%s days'
-            GROUP BY sale_date
-            ORDER BY sale_date
-        """
+        if days_back is None:
+            # Get all available data
+            query = """
+                SELECT sale_date as ds, SUM(quantity_sold) as y
+                FROM sales_data
+                WHERE product_id = %s
+                GROUP BY sale_date
+                ORDER BY sale_date
+            """
+            cur.execute(query, (product_id,))
+        else:
+            # Get data from last N days
+            query = """
+                SELECT sale_date as ds, SUM(quantity_sold) as y
+                FROM sales_data
+                WHERE product_id = %s
+                AND sale_date >= CURRENT_DATE - INTERVAL '%s days'
+                GROUP BY sale_date
+                ORDER BY sale_date
+            """
+            cur.execute(query, (product_id, days_back))
 
-        cur.execute(query, (product_id, days_back))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -92,8 +109,8 @@ class InventoryForecaster:
 
     def get_accuracy_metrics(self, product_id):
         """Calculate historical accuracy metrics"""
-        # Use more data for better accuracy - at least 1 year
-        df = self.get_historical_data(product_id, days_back=540)
+        # Get all available data for accuracy calculation
+        df = self.get_historical_data(product_id)
 
         if df.empty or len(df) < 100:
             return None
@@ -119,7 +136,13 @@ class InventoryForecaster:
         predicted = forecast['yhat'].values
 
         mae = abs(actual - predicted).mean()
-        mape = (abs((actual - predicted) / actual) * 100).mean()
+
+        # Calculate MAPE excluding zero values to avoid division by zero
+        non_zero_mask = actual != 0
+        if non_zero_mask.sum() > 0:
+            mape = (abs((actual[non_zero_mask] - predicted[non_zero_mask]) / actual[non_zero_mask]) * 100).mean()
+        else:
+            mape = 0.0
 
         return {
             'mae': float(mae),
