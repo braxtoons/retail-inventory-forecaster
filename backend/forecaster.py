@@ -8,7 +8,7 @@ class InventoryForecaster:
         self.model = None
 
     def get_historical_data(self, product_id, days_back=None):
-        """Fetch historical sales data for a product
+        """Fetch historical sales data for a product with external regressors
 
         Args:
             product_id: ID of the product
@@ -18,24 +18,38 @@ class InventoryForecaster:
         cur = conn.cursor()
 
         if days_back is None:
-            # Get all available data
+            # Get all available data with regressors
             query = """
-                SELECT sale_date as ds, SUM(quantity_sold) as y
-                FROM sales_data
-                WHERE product_id = %s
-                GROUP BY sale_date
-                ORDER BY sale_date
+                SELECT
+                    s.sale_date as ds,
+                    SUM(s.quantity_sold) as y,
+                    SUM(s.on_promotion) as on_promotion,
+                    o.dcoilwtico as oil_price,
+                    CASE WHEN h.date IS NOT NULL THEN 1 ELSE 0 END as is_holiday
+                FROM sales_data s
+                LEFT JOIN oil_prices o ON s.sale_date = o.date
+                LEFT JOIN holidays h ON s.sale_date = h.date AND h.locale = 'National'
+                WHERE s.product_id = %s
+                GROUP BY s.sale_date, o.dcoilwtico, h.date
+                ORDER BY s.sale_date
             """
             cur.execute(query, (product_id,))
         else:
-            # Get data from last N days
+            # Get data from last N days with regressors
             query = """
-                SELECT sale_date as ds, SUM(quantity_sold) as y
-                FROM sales_data
-                WHERE product_id = %s
-                AND sale_date >= CURRENT_DATE - INTERVAL '%s days'
-                GROUP BY sale_date
-                ORDER BY sale_date
+                SELECT
+                    s.sale_date as ds,
+                    SUM(s.quantity_sold) as y,
+                    SUM(s.on_promotion) as on_promotion,
+                    o.dcoilwtico as oil_price,
+                    CASE WHEN h.date IS NOT NULL THEN 1 ELSE 0 END as is_holiday
+                FROM sales_data s
+                LEFT JOIN oil_prices o ON s.sale_date = o.date
+                LEFT JOIN holidays h ON s.sale_date = h.date AND h.locale = 'National'
+                WHERE s.product_id = %s
+                AND s.sale_date >= CURRENT_DATE - INTERVAL '%s days'
+                GROUP BY s.sale_date, o.dcoilwtico, h.date
+                ORDER BY s.sale_date
             """
             cur.execute(query, (product_id, days_back))
 
@@ -48,17 +62,25 @@ class InventoryForecaster:
         if not df.empty:
             df['ds'] = pd.to_datetime(df['ds'])
 
+            # Fill missing oil prices with forward fill then backward fill
+            if 'oil_price' in df.columns:
+                df['oil_price'] = df['oil_price'].fillna(method='ffill').fillna(method='bfill').fillna(0)
+
+            # Ensure numeric columns
+            df['on_promotion'] = df['on_promotion'].fillna(0).astype(float)
+            df['is_holiday'] = df['is_holiday'].fillna(0).astype(int)
+
         return df
 
     def train_and_forecast(self, product_id, forecast_days=30):
-        """Train Prophet model and generate forecasts"""
-        # Get historical data
+        """Train Prophet model with external regressors and generate forecasts"""
+        # Get historical data with regressors
         df = self.get_historical_data(product_id)
 
         if df.empty or len(df) < 10:
             raise ValueError(f"Insufficient data for product {product_id}")
 
-        # Initialize and train Prophet model
+        # Initialize Prophet model
         self.model = Prophet(
             yearly_seasonality=True,
             weekly_seasonality=True,
@@ -66,10 +88,48 @@ class InventoryForecaster:
             interval_width=0.95  # 95% confidence interval
         )
 
-        self.model.fit(df)
+        # Add regressors if data available
+        has_oil = 'oil_price' in df.columns and df['oil_price'].notna().any()
+        has_holiday = 'is_holiday' in df.columns
+        has_promo = 'on_promotion' in df.columns and df['on_promotion'].notna().any()
+
+        if has_oil:
+            self.model.add_regressor('oil_price')
+        if has_holiday:
+            self.model.add_regressor('is_holiday')
+        if has_promo:
+            self.model.add_regressor('on_promotion')
+
+        # Fit model with available regressors
+        self.model.fit(df[['ds', 'y'] + [col for col in ['oil_price', 'is_holiday', 'on_promotion'] if col in df.columns]])
 
         # Create future dataframe
         future = self.model.make_future_dataframe(periods=forecast_days)
+
+        # Add future regressor values
+        if has_oil:
+            # Use last known oil price for future predictions
+            last_oil_price = df['oil_price'].iloc[-1] if not df['oil_price'].isna().all() else 0
+            future['oil_price'] = last_oil_price
+
+        if has_holiday:
+            # Get future holidays from database
+            conn = get_db_connection()
+            cur = conn.cursor()
+            max_date = future['ds'].max().date()
+            cur.execute(
+                "SELECT date FROM holidays WHERE locale = 'National' AND date > %s AND date <= %s",
+                (df['ds'].max().date(), max_date)
+            )
+            future_holidays = [row['date'] for row in cur.fetchall()]
+            cur.close()
+            conn.close()
+
+            future['is_holiday'] = future['ds'].apply(lambda x: 1 if x.date() in future_holidays else 0)
+
+        if has_promo:
+            # Assume no future promotions (conservative forecast)
+            future['on_promotion'] = 0
 
         # Make predictions
         forecast = self.model.predict(future)

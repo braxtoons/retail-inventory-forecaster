@@ -39,6 +39,22 @@ def import_store_sales_data(data_dir):
         print("ERROR: train.csv not found. Please download the dataset from Kaggle.")
         return
 
+    # Load oil prices
+    try:
+        oil_df = pd.read_csv(f"{data_dir}/oil.csv")
+        print(f"  oil.csv: {len(oil_df):,} rows")
+    except FileNotFoundError:
+        print("  WARNING: oil.csv not found. Continuing without oil prices.")
+        oil_df = None
+
+    # Load holidays
+    try:
+        holidays_df = pd.read_csv(f"{data_dir}/holidays_events.csv")
+        print(f"  holidays_events.csv: {len(holidays_df):,} rows")
+    except FileNotFoundError:
+        print("  WARNING: holidays_events.csv not found. Continuing without holidays.")
+        holidays_df = None
+
     # Get unique product families (these will be our products)
     print("\nImporting products (product families)...")
     families = train_df['family'].unique()
@@ -112,6 +128,44 @@ def import_store_sales_data(data_dir):
     conn.commit()
     print(f"Imported {len(product_id_map)} products")
 
+    # Import oil prices
+    if oil_df is not None:
+        print("\nImporting oil prices...")
+        oil_records = []
+        for _, row in oil_df.iterrows():
+            if pd.notna(row['dcoilwtico']):  # Skip missing values
+                oil_records.append((row['date'], float(row['dcoilwtico'])))
+
+        if oil_records:
+            cur.executemany(
+                "INSERT INTO oil_prices (date, dcoilwtico) VALUES (%s, %s) ON CONFLICT (date) DO NOTHING",
+                oil_records
+            )
+            conn.commit()
+            print(f"Imported {len(oil_records)} oil price records")
+
+    # Import holidays
+    if holidays_df is not None:
+        print("\nImporting holidays...")
+        holiday_records = []
+        for _, row in holidays_df.iterrows():
+            holiday_records.append((
+                row['date'],
+                row.get('type', ''),
+                row.get('locale', ''),
+                row.get('locale_name', ''),
+                row.get('description', ''),
+                row.get('transferred', False)
+            ))
+
+        if holiday_records:
+            cur.executemany(
+                "INSERT INTO holidays (date, type, locale, locale_name, description, transferred) VALUES (%s, %s, %s, %s, %s, %s)",
+                holiday_records
+            )
+            conn.commit()
+            print(f"Imported {len(holiday_records)} holiday records")
+
     # Import sales data
     print("\nImporting sales data...")
     print("This may take several minutes for large datasets...")
@@ -119,7 +173,8 @@ def import_store_sales_data(data_dir):
     # Aggregate sales by date and family (sum across all stores)
     print("  Aggregating sales by date and product family...")
     sales_agg = train_df.groupby(['date', 'family']).agg({
-        'sales': 'sum'
+        'sales': 'sum',
+        'onpromotion': 'sum'  # Sum promotion count across stores
     }).reset_index()
 
     # Prepare data for insertion
@@ -128,6 +183,7 @@ def import_store_sales_data(data_dir):
         product_id = product_id_map[row['family']]
         sale_date = row['date']
         quantity_sold = int(row['sales'])  # Sales is already in units
+        on_promotion = int(row['onpromotion']) if pd.notna(row['onpromotion']) else 0
 
         # Calculate total amount
         price = None
@@ -142,7 +198,8 @@ def import_store_sales_data(data_dir):
             product_id,
             sale_date,
             quantity_sold,
-            total_amount
+            total_amount,
+            on_promotion
         ))
 
     print(f"  Inserting {len(sales_records):,} sales records...")
@@ -152,7 +209,7 @@ def import_store_sales_data(data_dir):
     for i in range(0, len(sales_records), batch_size):
         batch = sales_records[i:i+batch_size]
         cur.executemany(
-            "INSERT INTO sales_data (product_id, sale_date, quantity_sold, total_amount) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO sales_data (product_id, sale_date, quantity_sold, total_amount, on_promotion) VALUES (%s, %s, %s, %s, %s)",
             batch
         )
         conn.commit()

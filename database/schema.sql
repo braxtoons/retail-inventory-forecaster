@@ -17,12 +17,37 @@ CREATE TABLE IF NOT EXISTS sales_data (
     sale_date DATE NOT NULL,
     quantity_sold INTEGER NOT NULL,
     total_amount DECIMAL(10, 2),
+    on_promotion INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create index for time-series queries
 CREATE INDEX IF NOT EXISTS idx_sales_date ON sales_data(sale_date);
 CREATE INDEX IF NOT EXISTS idx_sales_product_date ON sales_data(product_id, sale_date);
+
+-- Oil prices table (external regressor)
+CREATE TABLE IF NOT EXISTS oil_prices (
+    oil_id SERIAL PRIMARY KEY,
+    date DATE NOT NULL UNIQUE,
+    dcoilwtico DECIMAL(10, 2),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_oil_date ON oil_prices(date);
+
+-- Holidays table (external regressor)
+CREATE TABLE IF NOT EXISTS holidays (
+    holiday_id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    type VARCHAR(50),
+    locale VARCHAR(50),
+    locale_name VARCHAR(100),
+    description VARCHAR(255),
+    transferred BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_holiday_date ON holidays(date);
 
 -- Forecasts table
 CREATE TABLE IF NOT EXISTS forecasts (
