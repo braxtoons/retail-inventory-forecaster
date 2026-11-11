@@ -1,0 +1,81 @@
+# docker compose up                      -> Postgres + backend + frontend, seeded synthetic data, evaluated
+# TRAINING_START_DATE=2014-04-01 docker compose --profile kaggle up
+#                                        -> replaces the synthetic data with Favorita from ./data/store-sales,
+#                                           evaluates it, and serves it (Favorita promotions start 2014-04-01)
+#
+# Frontend: http://localhost:3000   Backend: http://localhost:5000
+name: retail-forecaster
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  environment: &backend-env
+    DATABASE_URL: postgresql://forecaster:forecaster@db:5432/retail_forecaster
+    FLASK_ENV: production
+    # Empty = use all history, right for the synthetic data (ADR-0003, ADR-0011).
+    # Favorita needs 2014-04-01 because promotions are unrecorded before then.
+    TRAINING_START_DATE: ${TRAINING_START_DATE:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forecaster
+      POSTGRES_PASSWORD: forecaster
+      POSTGRES_DB: retail_forecaster
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro   # schema applied on first start
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forecaster -d retail_forecaster"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One-off: load the seeded synthetic dataset
+  seed:
+    <<: *backend
+    command: ["python", "seed.py", "--dataset", "synthetic"]
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  # One-off (kaggle profile only): replace it with Favorita. Needs data/store-sales/*.csv
+  seed-kaggle:
+    <<: *backend
+    profiles: ["kaggle"]
+    command: ["python", "seed.py", "--dataset", "kaggle", "--data-dir", "/data/store-sales"]
+    volumes:
+      - ./data/store-sales:/data/store-sales:ro
+    depends_on:
+      seed: { condition: service_completed_successfully }
+    restart: "no"
+
+  # One-off: offline rolling-CV evaluation (python -m evaluate --all)
+  evaluate:
+    <<: *backend
+    command: ["python", "-m", "evaluate", "--all"]
+    depends_on:
+      seed: { condition: service_completed_successfully }
+      seed-kaggle: { condition: service_completed_successfully, required: false }
+    restart: "no"
+
+  backend:
+    <<: *backend
+    ports:
+      - "5000:5000"
+    depends_on:
+      db: { condition: service_healthy }
+      evaluate: { condition: service_completed_successfully }
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

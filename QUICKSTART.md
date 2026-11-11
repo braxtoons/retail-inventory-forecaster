@@ -1,113 +1,83 @@
 # Quick Start Guide
 
-Get the Retail Inventory Forecaster running in minutes!
+Get the Retail Inventory Forecaster running in minutes.
 
-## Option 1: Automated Setup (Recommended)
+## Option 1: Docker (one command)
 
-Run the setup script:
+```bash
+docker compose up --build
+```
+
+This starts Postgres (schema applied on first start), loads the **seeded synthetic dataset**, runs the offline
+evaluation, then starts the backend (http://localhost:5000) and frontend (http://localhost:3000).
+
+To use the real Favorita dataset instead (see `KAGGLE_IMPORT_INSTRUCTIONS.md` for the download):
+
+```bash
+# CSVs in data/store-sales/. Favorita promotions are unrecorded before 2014-04-01, hence the start date.
+TRAINING_START_DATE=2014-04-01 docker compose --profile kaggle up --build
+```
+
+## Option 2: Automated local setup
 
 ```bash
 ./setup.sh
 ```
 
-This will:
-- Create the PostgreSQL database
-- Initialize the schema
-- Set up the backend with sample data
-- Install frontend dependencies
-- Configure environment variables
+Creates the database, applies the schema, sets up the backend, generates synthetic data, runs the evaluation and
+installs the frontend dependencies.
 
-## Option 2: Manual Setup
-
-### Step 1: Create Database
+## Option 3: Manual local setup
 
 ```bash
-createdb retail_forecaster
-psql retail_forecaster < database/schema.sql
-```
+# 1. Database
+createdb retail_forecaster     # skip if it already exists. "permission denied"? Ask a superuser:
+                               #   sudo -u postgres createdb -O "$USER" retail_forecaster
 
-### Step 2: Setup Backend
-
-```bash
+# 2. Backend
 cd backend
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env                               # edit DATABASE_URL; set TRAINING_START_DATE= (empty) for synthetic data
+python database.py                                 # apply schema (idempotent; also migrates an older database)
+python generate_sample_data.py                     # seeded synthetic dataset
+python -m evaluate --all                           # offline evaluation (rolling CV, baselines, ablation)
 
-# Create .env file
-cp .env.example .env
-# Edit .env with your database credentials
-
-# Generate sample data
-python generate_sample_data.py
-```
-
-### Step 3: Setup Frontend
-
-```bash
-cd frontend
+# 3. Frontend
+cd ../frontend
 npm install
 ```
 
-## Running the Application
-
-### Terminal 1 - Start Backend
+### Run
 
 ```bash
-cd backend
-source venv/bin/activate
-python app.py
+# Terminal 1
+cd backend && source venv/bin/activate && python app.py     # http://localhost:5000
+
+# Terminal 2
+cd frontend && npm start                                    # http://localhost:3000 (Vite; proxies /api)
 ```
 
-Backend will run on http://localhost:5000
+## First use
 
-### Terminal 2 - Start Frontend
+1. Open http://localhost:3000 and pick a product (for the synthetic data: Beverages, Produce, Dairy, Cleaning).
+2. Accuracy and inventory panels load from stored results. Nothing is trained when you select a product.
+3. Click **Generate forecast** to train once and store a new 90-day forecast run.
+4. Read the chart (forecast, 95% interval, faint seasonal-naive reference), the **Forecast accuracy** panel (model vs.
+   baselines per horizon range, with a verdict) and the **Inventory recommendation** panel (enter lead time, service
+   level and on-hand stock).
+
+## Tests
 
 ```bash
-cd frontend
-npm start
+cd backend && pytest -m "not slow"     # fast loop: no Prophet fit
+cd backend && pytest                   # all tiers; db tests use a throwaway schema of DATABASE_URL, slow tests fit Prophet
+cd frontend && npm test && npm run typecheck
 ```
-
-Frontend will run on http://localhost:3000
-
-## First Use
-
-1. Open http://localhost:3000 in your browser
-2. Select a product from the dropdown (e.g., "Laptop")
-3. Keep default settings (90 historical days, 30 forecast days)
-4. Click "Generate Forecast"
-5. View the interactive chart with:
-   - Historical sales (blue line)
-   - Forecasted sales (purple dashed line)
-   - 95% confidence interval (shaded area)
-   - Accuracy metrics (MAE and MAPE)
 
 ## Troubleshooting
 
-### "Connection refused" error
-- Ensure PostgreSQL is running: `sudo systemctl status postgresql`
-- Check database credentials in `backend/.env`
-
-### "Module not found" error
-- Activate virtual environment: `source backend/venv/bin/activate`
-- Reinstall dependencies: `pip install -r requirements.txt`
-
-### Port already in use
-- Backend: Change FLASK_PORT in `backend/.env`
-- Frontend: Run `PORT=3001 npm start`
-
-## Sample Products
-
-The application comes pre-loaded with 10 sample products:
-- Laptop ($899.99)
-- Wireless Mouse ($29.99)
-- Office Chair ($199.99)
-- Desk Lamp ($49.99)
-- Coffee Maker ($79.99)
-- Water Bottle ($19.99)
-- Notebook Set ($12.99)
-- USB Cable ($9.99)
-- Backpack ($59.99)
-- Desk Organizer ($24.99)
-
-Each has 2 years of simulated sales data with realistic patterns!
+- **"Connection refused"**: make sure PostgreSQL is running and `backend/.env` has the right `DATABASE_URL`.
+- **"Not evaluated yet" in the accuracy panel**: run `python -m evaluate --all` (or `--product <id>`).
+- **Forecast marked out of date**: the product was re-evaluated with a different configuration, or its data changed. Click Regenerate.
+- **Port in use**: backend `FLASK_PORT` in `backend/.env`; frontend `npm start -- --port 3001`.

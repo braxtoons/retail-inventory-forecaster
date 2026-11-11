@@ -1,0 +1,8 @@
+**/node_modules
+**/__pycache__
+backend/venv
+backend/.env
+frontend/dist
+frontend/build
+data/store-sales
+.git

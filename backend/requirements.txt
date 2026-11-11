@@ -7,3 +7,5 @@ cmdstanpy==1.2.0
 python-dotenv==1.0.0
 SQLAlchemy==2.0.23
 numpy<2.0.0
+pytest==8.3.4
+gunicorn==21.2.0

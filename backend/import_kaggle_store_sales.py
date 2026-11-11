@@ -8,10 +8,11 @@ Instructions:
 3. Run this script: python import_kaggle_store_sales.py --data-dir data/store-sales/
 """
 
+import os
 import pandas as pd
 import argparse
-from database import get_db_connection
-from datetime import datetime
+from psycopg2.extras import execute_values
+from database import get_connection
 
 def import_store_sales_data(data_dir):
     """Import Kaggle Store Sales dataset into PostgreSQL"""
@@ -19,29 +20,40 @@ def import_store_sales_data(data_dir):
     print("Starting import of Kaggle Store Sales dataset...")
     print(f"Data directory: {data_dir}")
 
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    # Clear existing data
-    print("\nClearing existing data...")
-    cur.execute('DELETE FROM forecasts')
-    cur.execute('DELETE FROM sales_data')
-    cur.execute('DELETE FROM products')
-    conn.commit()
-    print("Existing data cleared.")
-
-    # Load CSV files
+    # Load CSV files first so a missing file never leaves the database half-cleared
     print("\nLoading CSV files...")
     try:
-        train_df = pd.read_csv(f"{data_dir}/train.csv")
+        train_df = pd.read_csv(os.path.join(data_dir, "train.csv"))
         print(f"  train.csv: {len(train_df):,} rows")
     except FileNotFoundError:
         print("ERROR: train.csv not found. Please download the dataset from Kaggle.")
         return
 
+    # Planned promotions (ADR-0002): Kaggle's test.csv lists the promotions for 2017-08-16..31
+    try:
+        test_df = pd.read_csv(os.path.join(data_dir, "test.csv"))
+        print(f"  test.csv: {len(test_df):,} rows (planned promotions)")
+    except FileNotFoundError:
+        print("  WARNING: test.csv not found. No planned promotions will be seeded.")
+        test_df = None
+
+    with get_connection() as conn:
+        _import(conn, data_dir, train_df, test_df)
+
+
+def _import(conn, data_dir, train_df, test_df):
+    cur = conn.cursor()
+
+    # Clear existing data (runs and evaluations reference products and are cleared by CASCADE)
+    print("\nClearing existing data...")
+    cur.execute('TRUNCATE forecast_run_samples, forecasts, forecast_runs, evaluation_service_level, '
+                'evaluation_metrics, evaluation_runs, planned_promotions, sales_data, oil_prices, '
+                'holidays, products RESTART IDENTITY CASCADE')
+    print("Existing data cleared.")
+
     # Load oil prices
     try:
-        oil_df = pd.read_csv(f"{data_dir}/oil.csv")
+        oil_df = pd.read_csv(os.path.join(data_dir, "oil.csv"))
         print(f"  oil.csv: {len(oil_df):,} rows")
     except FileNotFoundError:
         print("  WARNING: oil.csv not found. Continuing without oil prices.")
@@ -49,7 +61,7 @@ def import_store_sales_data(data_dir):
 
     # Load holidays
     try:
-        holidays_df = pd.read_csv(f"{data_dir}/holidays_events.csv")
+        holidays_df = pd.read_csv(os.path.join(data_dir, "holidays_events.csv"))
         print(f"  holidays_events.csv: {len(holidays_df):,} rows")
     except FileNotFoundError:
         print("  WARNING: holidays_events.csv not found. Continuing without holidays.")
@@ -97,6 +109,7 @@ def import_store_sales_data(data_dir):
     }
 
     product_id_map = {}
+    price_map = {}
     for family in sorted(families):
         # Determine category
         category = 'Grocery'
@@ -124,46 +137,39 @@ def import_store_sales_data(data_dir):
         )
         product_id = cur.fetchone()['product_id']
         product_id_map[family] = product_id
+        price_map[family] = price
 
-    conn.commit()
     print(f"Imported {len(product_id_map)} products")
 
     # Import oil prices
     if oil_df is not None:
         print("\nImporting oil prices...")
-        oil_records = []
-        for _, row in oil_df.iterrows():
-            if pd.notna(row['dcoilwtico']):  # Skip missing values
-                oil_records.append((row['date'], float(row['dcoilwtico'])))
+        oil_records = [(row.date, float(row.dcoilwtico))
+                       for row in oil_df.itertuples() if pd.notna(row.dcoilwtico)]
 
         if oil_records:
-            cur.executemany(
-                "INSERT INTO oil_prices (date, dcoilwtico) VALUES (%s, %s) ON CONFLICT (date) DO NOTHING",
+            execute_values(
+                cur,
+                "INSERT INTO oil_prices (date, dcoilwtico) VALUES %s ON CONFLICT (date) DO NOTHING",
                 oil_records
             )
-            conn.commit()
             print(f"Imported {len(oil_records)} oil price records")
 
     # Import holidays
     if holidays_df is not None:
         print("\nImporting holidays...")
-        holiday_records = []
-        for _, row in holidays_df.iterrows():
-            holiday_records.append((
-                row['date'],
-                row.get('type', ''),
-                row.get('locale', ''),
-                row.get('locale_name', ''),
-                row.get('description', ''),
-                row.get('transferred', False)
-            ))
+        holiday_records = [
+            (row['date'], row.get('type', ''), row.get('locale', ''), row.get('locale_name', ''),
+             row.get('description', ''), bool(row.get('transferred', False)))
+            for row in holidays_df.to_dict('records')
+        ]
 
         if holiday_records:
-            cur.executemany(
-                "INSERT INTO holidays (date, type, locale, locale_name, description, transferred) VALUES (%s, %s, %s, %s, %s, %s)",
+            execute_values(
+                cur,
+                "INSERT INTO holidays (date, type, locale, locale_name, description, transferred) VALUES %s",
                 holiday_records
             )
-            conn.commit()
             print(f"Imported {len(holiday_records)} holiday records")
 
     # Import sales data
@@ -177,30 +183,15 @@ def import_store_sales_data(data_dir):
         'onpromotion': 'sum'  # Sum promotion count across stores
     }).reset_index()
 
-    # Prepare data for insertion
-    sales_records = []
-    for _, row in sales_agg.iterrows():
-        product_id = product_id_map[row['family']]
-        sale_date = row['date']
-        quantity_sold = int(row['sales'])  # Sales is already in units
-        on_promotion = int(row['onpromotion']) if pd.notna(row['onpromotion']) else 0
-
-        # Calculate total amount
-        price = None
-        cur.execute("SELECT unit_price FROM products WHERE product_id = %s", (product_id,))
-        result = cur.fetchone()
-        if result:
-            price = float(result['unit_price'])
-
-        total_amount = quantity_sold * price if price else 0
-
-        sales_records.append((
-            product_id,
-            sale_date,
-            quantity_sold,
-            total_amount,
-            on_promotion
-        ))
+    # Prepare data for insertion. Quantities stay fractional for weighed families (ADR-0001).
+    sales_agg['product_id'] = sales_agg['family'].map(product_id_map)
+    sales_agg['quantity_sold'] = sales_agg['sales'].round(3)
+    sales_agg['total_amount'] = (sales_agg['quantity_sold'] * sales_agg['family'].map(price_map)).round(2)
+    sales_agg['on_promotion'] = sales_agg['onpromotion'].fillna(0).astype(int)
+    sales_records = list(zip(
+        sales_agg['product_id'].astype(int), sales_agg['date'], sales_agg['quantity_sold'].astype(float),
+        sales_agg['total_amount'].astype(float), sales_agg['on_promotion']
+    ))
 
     print(f"  Inserting {len(sales_records):,} sales records...")
 
@@ -208,12 +199,27 @@ def import_store_sales_data(data_dir):
     batch_size = 10000
     for i in range(0, len(sales_records), batch_size):
         batch = sales_records[i:i+batch_size]
-        cur.executemany(
-            "INSERT INTO sales_data (product_id, sale_date, quantity_sold, total_amount, on_promotion) VALUES (%s, %s, %s, %s, %s)",
+        execute_values(
+            cur,
+            "INSERT INTO sales_data (product_id, sale_date, quantity_sold, total_amount, on_promotion) VALUES %s",
             batch
         )
-        conn.commit()
         print(f"    Inserted {min(i+batch_size, len(sales_records)):,} / {len(sales_records):,} records")
+
+    # Seed planned promotions from test.csv
+    n_planned = 0
+    if test_df is not None:
+        planned = test_df.groupby(['date', 'family'])['onpromotion'].sum().reset_index()
+        planned_records = [(product_id_map[r.family], r.date, int(r.onpromotion))
+                           for r in planned.itertuples() if r.family in product_id_map]
+        if planned_records:
+            execute_values(
+                cur,
+                "INSERT INTO planned_promotions (product_id, date, on_promotion) VALUES %s",
+                planned_records
+            )
+        n_planned = len(planned_records)
+        print(f"  Seeded {n_planned:,} planned promotion rows")
 
     # Get date range
     cur.execute("SELECT MIN(sale_date) as min_date, MAX(sale_date) as max_date FROM sales_data")
@@ -229,7 +235,6 @@ def import_store_sales_data(data_dir):
     print("\nYou can now use the forecaster with real Kaggle data!")
 
     cur.close()
-    conn.close()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Import Kaggle Store Sales dataset')
